@@ -1,123 +1,76 @@
-import telebot
-from telebot import types
-import json
-import os
+import asyncio
+import random
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
 
 TOKEN = "8723811549:AAHjidPHxT0L9VgrDBtDXFsB970BK_dLc1c"
-ADMIN_IDS = [2064987454]  # <- сюда можно добавить несколько админов
-bot = telebot.TeleBot(TOKEN)
 
-GIVEAWAYS_FILE = "giveaways_list.json"
-TAKEN_FILE = "taken_giveaways.json"
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
-# Загружаем раздачи
-if os.path.exists(GIVEAWAYS_FILE):
-    with open(GIVEAWAYS_FILE, "r", encoding="utf-8") as f:
-        GIVEAWAYS = json.load(f)
-else:
-    GIVEAWAYS = {}
+participants = {}
 
-# Загружаем занятые раздачи
-if os.path.exists(TAKEN_FILE):
-    with open(TAKEN_FILE, "r", encoding="utf-8") as f:
-        taken_giveaways = json.load(f)
-else:
-    taken_giveaways = {}
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer("Привет! Я бот для проведения розыгрышей 🎉")
 
-# Сохраняем занятые раздачи
-def save_taken():
-    with open(TAKEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(taken_giveaways, f, ensure_ascii=False)
+@dp.message(Command("giveaway"))
+async def create_giveaway(message: types.Message):
+    if message.chat.type != "channel":
+        await message.answer("Команду нужно использовать в канале.")
+        return
+    
+    giveaway_id = random.randint(1000, 9999)
+    participants[giveaway_id] = []
 
-# Создание клавиатуры
-def create_keyboard():
-    markup = types.InlineKeyboardMarkup()
-    for key in GIVEAWAYS.keys():
-        if key not in taken_giveaways:
-            markup.add(types.InlineKeyboardButton(key, callback_data=key))
-    return markup
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎉 Участвовать", callback_data=f"join_{giveaway_id}")]
+        ]
+    )
 
-# /start
-@bot.message_handler(commands=['start'])
-def start(message):
-    markup = create_keyboard()
-    if markup.keyboard:
-        bot.send_message(
-            message.chat.id,
-            "Привет! 👋 Выбери раздачу ниже и получи свой бонус:",
-            reply_markup=markup
-        )
+    await message.answer(
+        f"🎁 <b>РОЗЫГРЫШ!</b>\n\n"
+        f"Нажми кнопку ниже, чтобы участвовать!",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query(lambda c: c.data.startswith("join_"))
+async def join_giveaway(callback: types.CallbackQuery):
+    giveaway_id = int(callback.data.split("_")[1])
+
+    if callback.from_user.id not in participants[giveaway_id]:
+        participants[giveaway_id].append(callback.from_user.id)
+        await callback.answer("Вы участвуете! 🎉", show_alert=True)
     else:
-        bot.send_message(message.chat.id, "🎉 Все раздачи уже забраны!")
+        await callback.answer("Вы уже участвуете!", show_alert=True)
 
-# /add - добавление новой раздачи админом
-@bot.message_handler(commands=['add'])
-def add_giveaway(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "❌ Только админ может добавлять раздачи!")
+@dp.message(Command("winner"))
+async def choose_winner(message: types.Message):
+    if message.chat.type != "channel":
         return
 
-    try:
-        parts = message.text.split("|")
-        if len(parts) != 2:
-            bot.reply_to(message, "❌ Используй формат: /add Название раздачи | Сообщение бонуса")
-            return
-
-        title = parts[0].replace("/add", "").strip()
-        bonus = parts[1].strip()
-
-        if title in GIVEAWAYS:
-            bot.reply_to(message, "❌ Такая раздача уже существует!")
-            return
-
-        GIVEAWAYS[title] = bonus
-        with open(GIVEAWAYS_FILE, "w", encoding="utf-8") as f:
-            json.dump(GIVEAWAYS, f, ensure_ascii=False)
-        bot.reply_to(message, f"✅ Раздача '{title}' добавлена!")
-
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-
-# /view - посмотреть кто забрал раздачи (username)
-@bot.message_handler(commands=['view'])
-def view_taken(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "❌ Только админ может видеть кто забрал раздачи!")
+    if not participants:
+        await message.answer("Нет активных розыгрышей.")
         return
 
-    if not taken_giveaways:
-        bot.reply_to(message, "ℹ️ Пока никто не забрал раздачи.")
+    giveaway_id = list(participants.keys())[-1]
+    users = participants[giveaway_id]
+
+    if not users:
+        await message.answer("Нет участников.")
         return
 
-    text = "📋 Раздачи и пользователи:\n\n"
-    for giveaway, username in taken_giveaways.items():
-        text += f"{giveaway} — @{username}\n"  # отображаем username
-    bot.reply_to(message, text)
+    winner = random.choice(users)
 
-# Обработка нажатий
-@bot.callback_query_handler(func=lambda call: True)
-def callback_inline(call):
-    # получаем username или имя пользователя
-    username = call.from_user.username or call.from_user.first_name
-    selection = call.data
+    await message.answer(f"🏆 Победитель: <a href='tg://user?id={winner}'>Участник</a>")
 
-    if selection in GIVEAWAYS:
-        if selection in taken_giveaways:
-            bot.answer_callback_query(call.id, "❌ Эта раздача уже занята другим пользователем!")
-        else:
-            taken_giveaways[selection] = username  # сохраняем username
-            save_taken()
-            bot.answer_callback_query(call.id, "✅ Раздача отправлена!")
-            bot.send_message(call.message.chat.id, f"{GIVEAWAYS[selection]}")
+    del participants[giveaway_id]
 
-            markup = create_keyboard()
-            if markup.keyboard:
-                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
-            else:
-                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-                bot.send_message(call.message.chat.id, "🎉 Все раздачи уже забраны!")
-    else:
-        bot.answer_callback_query(call.id, "⚠️ Ошибка, попробуй ещё раз!")
+async def main():
+    await dp.start_polling(bot)
 
-print("Бот запущен...")
-bot.polling()
+if __name__ == "__main__":
+    asyncio.run(main())
